@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # ShopWise
 
 ShopWise is a student-focused shopping assistant that compares prices across major retailers (Amazon, Walmart, Best Buy, Newegg), surfaces affordable picks for any product category, estimates a carbon footprint score, and summarizes the best deals using Claude.
@@ -46,3 +47,7 @@ python main.py --query "wireless headphones" --limit 3
 
 The CLI prints the ranked list, summary, and Galileo evaluation to stdout. Use this for debugging or scripted runs if you prefer terminal output.*** End Patch
 
+=======
+# shopwise
+The intelligent way for students to save money while making ethical shopping choices.
+>>>>>>> 5743782326979d0f914c40b3058a51243456963a
