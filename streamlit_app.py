@@ -3,13 +3,121 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
+import hashlib
+import json
+import os
+import re
 
+import psycopg
+from psycopg_pool import ConnectionPool
 import streamlit as st
 
 from src.price_agent.agent import ProductResult, collect_results
 from src.price_agent.evaluator import evaluate_with_galileo
 from src.price_agent.summarize import summarize_with_claude
+
+
+EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+SPECIAL_CHARS = "!@#$%^&*()-_=+[]{};:'\",.<>/?`~|\\"
+SIGNUP_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS signup_profiles (
+    id BIGSERIAL PRIMARY KEY,
+    full_name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    organization TEXT NOT NULL,
+    major TEXT NOT NULL,
+    university TEXT NOT NULL,
+    location TEXT NOT NULL,
+    purpose_choices JSONB NOT NULL DEFAULT '[]'::jsonb,
+    purpose_text TEXT,
+    terms_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+    privacy_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+"""
+
+
+def init_session_state() -> None:
+    """Ensure common session keys are initialized exactly once."""
+    if "latest_results" not in st.session_state:
+        st.session_state["latest_results"] = {"results": [], "summary": "", "raw_dicts": [], "query": ""}
+    if "signup_records" not in st.session_state:
+        st.session_state["signup_records"] = []
+    if "signup_complete" not in st.session_state:
+        st.session_state["signup_complete"] = False
+    if "signup_defaults" not in st.session_state:
+        st.session_state["signup_defaults"] = {}
+    if "db_ready" not in st.session_state:
+        st.session_state["db_ready"] = False
+    if "db_error" not in st.session_state:
+        st.session_state["db_error"] = ""
+
+
+@st.cache_resource(show_spinner=False)
+def get_db_pool() -> Optional[ConnectionPool]:
+    """Create and cache a connection pool for Neon."""
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        return None
+    return ConnectionPool(conninfo=url, min_size=1, max_size=4, kwargs={"autocommit": True})
+
+
+def init_database() -> None:
+    """Ensure the Neon table is ready before accepting submissions."""
+    pool = get_db_pool()
+    if not pool:
+        st.session_state["db_ready"] = False
+        st.session_state["db_error"] = "DATABASE_URL not set; Neon storage disabled."
+        return
+
+    try:
+        with pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(SIGNUP_TABLE_SQL)
+        st.session_state["db_ready"] = True
+        st.session_state["db_error"] = ""
+    except psycopg.Error as exc:
+        st.session_state["db_ready"] = False
+        st.session_state["db_error"] = f"Neon setup failed: {exc.pgerror or exc}"
+
+
+def persist_signup_record(record: Dict[str, Any]) -> bool:
+    """Insert the signup record into Neon if possible."""
+    pool = get_db_pool()
+    if not pool:
+        return False
+
+    try:
+        with pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO signup_profiles (
+                    full_name, email, password_hash, organization,
+                    major, university, location, purpose_choices,
+                    purpose_text, terms_accepted, privacy_accepted
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s)
+                """,
+                (
+                    record["full_name"],
+                    record["email"],
+                    record["password_hash"],
+                    record["organization"],
+                    record["major"],
+                    record["university"],
+                    record["location"],
+                    json.dumps(record["purpose_choices"]),
+                    record["purpose_text"],
+                    record["terms"],
+                    record["privacy"],
+                ),
+            )
+        return True
+    except psycopg.Error as exc:
+        st.session_state["db_ready"] = False
+        st.session_state["db_error"] = f"Failed to store signup: {exc.pgerror or exc}"
+        return False
 
 
 def run_search_flow(query: str, limit: int) -> Dict[str, List]:
@@ -90,25 +198,230 @@ def render_galileo_section(query: str, raw_dicts: List[Dict]) -> None:
         st.json(st.session_state["galileo"])
 
 
+def password_feedback(password: str) -> Dict[str, bool]:
+    """Return requirement checks used for inline password feedback."""
+    return {
+        "At least 8 characters": len(password) >= 8,
+        "Contains a number": any(char.isdigit() for char in password),
+        "Contains an uppercase letter": any(char.isupper() for char in password),
+        "Contains a special character": any(char in SPECIAL_CHARS for char in password),
+    }
+
+
+def render_password_validation(password: str) -> None:
+    """Display contextual password strength hints."""
+    if not password:
+        st.caption("Password must be at least 8 characters and include a mix of characters.")
+        return
+
+    checks = password_feedback(password)
+    passed = sum(checks.values())
+    strength = ["Weak", "Fair", "Good", "Strong"]
+    st.progress(passed / len(checks))
+    st.caption(f"Password strength: {strength[passed-1] if passed else strength[0]}")
+    for label, ok in checks.items():
+        icon = "✅" if ok else "⚠️"
+        st.caption(f"{icon} {label}")
+
+
+def hash_password(password: str) -> str:
+    """Hash the password before storing in-memory."""
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def validate_signup_form(data: Dict[str, str], accepted_terms: bool, accepted_privacy: bool) -> List[str]:
+    """Validate signup fields and return a list of error messages, if any."""
+    errors: List[str] = []
+    if not data["full_name"].strip():
+        errors.append("Full name is required.")
+    if not EMAIL_PATTERN.match(data["email"]):
+        errors.append("Enter a valid email address.")
+    password_checks = password_feedback(data["password"])
+    if not all(password_checks.values()):
+        errors.append("Password must meet all strength requirements.")
+    if not data["organization"].strip():
+        errors.append("Company / school / organization is required.")
+    if not data["major"].strip():
+        errors.append("Tell us your major or primary focus area.")
+    if not data["university"].strip():
+        errors.append("University or campus must be provided.")
+    if not data["location"].strip():
+        errors.append("Share your location so we can localize retailers.")
+    if not data["purpose_choices"] and not data["purpose_text"].strip():
+        errors.append("Share at least one purpose so we can tailor results.")
+    if not accepted_terms or not accepted_privacy:
+        errors.append("Please confirm that you agree to the privacy policy and terms.")
+    return errors
+
+
+def render_signup_form() -> bool:
+    """Collect onboarding inputs before revealing the shopping experience."""
+    st.header("Step 1 · Create your ShopWise profile")
+    st.write(
+        "We personalize pricing tips and sustainability insights based on your major, campus, goals, and organization."
+    )
+    if st.session_state.get("db_error"):
+        st.warning(
+            "Neon storage is currently unavailable. Submissions will be kept for this session only.\n\n"
+            f"Details: {st.session_state['db_error']}"
+        )
+
+    defaults = st.session_state.get("signup_defaults", {})
+
+    with st.form("signup_form", clear_on_submit=False):
+        st.markdown("### Basic information")
+        col1, col2 = st.columns(2)
+        full_name = col1.text_input("Full name *", value=defaults.get("full_name", ""), placeholder="Taylor Rivera")
+        email = col2.text_input(
+            "Work or school email *",
+            value=defaults.get("email", ""),
+            placeholder="taylor@campus.edu",
+            help="Used for confirmations and personalized deal alerts.",
+        )
+
+        org = st.text_input(
+            "Company, school, or organization *",
+            value=defaults.get("organization", ""),
+            placeholder="Columbia University · Sustainability Lab",
+        )
+
+        password = st.text_input(
+            "Create a password *",
+            value=defaults.get("password", ""),
+            placeholder="Use 8+ characters, mix letters/numbers/symbols",
+            type="password",
+        )
+        render_password_validation(password)
+
+        st.markdown("### Student profile")
+        col3, col4, col5 = st.columns(3)
+        major = col3.text_input(
+            "Major or focus area *",
+            value=defaults.get("major", ""),
+            placeholder="Sustainable Design / Computer Science",
+        )
+        university = col4.text_input(
+            "University / campus *",
+            value=defaults.get("university", ""),
+            placeholder="Columbia University",
+            help="Used to unlock local student deals and bookstore pricing.",
+        )
+        location = col5.text_input(
+            "Current location *",
+            value=defaults.get("location", ""),
+            placeholder="New York, NY",
+        )
+
+        purpose_choices = st.multiselect(
+            "Primary reasons you're here *",
+            options=[
+                "Compare prices quickly",
+                "Track sustainability / carbon impact",
+                "Find exclusive student deals",
+                "Equip classrooms or teams",
+                "Other research",
+            ],
+            default=defaults.get("purpose_choices", []),
+            help="Helps us prioritize what to show you first.",
+        )
+        purpose_text = st.text_area(
+            "Anything else we should know? (optional)",
+            value=defaults.get("purpose_text", ""),
+            placeholder="e.g., Need energy-efficient monitors for new design lab.",
+        )
+        st.markdown("### Privacy & next steps")
+        accepted_terms = st.checkbox(
+            "I agree to the Terms of Service *",
+            value=defaults.get("terms", False),
+        )
+        accepted_privacy = st.checkbox(
+            "I agree to the Privacy Policy *",
+            value=defaults.get("privacy", False),
+        )
+
+        submitted = st.form_submit_button("Save and continue to ShopWise")
+
+    data = {
+        "full_name": full_name,
+        "email": email.strip(),
+        "password": password,
+        "organization": org,
+        "major": major,
+        "university": university,
+        "location": location,
+        "purpose_choices": purpose_choices,
+        "purpose_text": purpose_text,
+    }
+
+    if submitted:
+        errors = validate_signup_form(data, accepted_terms, accepted_privacy)
+        st.session_state["signup_defaults"] = {**data, "terms": accepted_terms, "privacy": accepted_privacy}
+        if errors:
+            for err in errors:
+                st.error(err)
+            return False
+
+        record = {
+            **data,
+            "password_hash": hash_password(password),
+            "terms": accepted_terms,
+            "privacy": accepted_privacy,
+        }
+        st.session_state["signup_records"].append(record)
+        st.session_state["latest_signup"] = record
+        st.session_state["signup_complete"] = True
+        st.session_state["signup_defaults"]["password"] = ""
+        stored = persist_signup_record(record)
+        st.success(f"Thanks, {data['full_name'].split()[0]}! Your preferences are saved.")
+        if stored:
+            st.caption("Signup securely stored in Neon.")
+        else:
+            st.warning("Saved for this session only because Neon is unreachable right now.")
+        st.info(
+            "Next up: enter a product to compare student pricing, view carbon insights, and opt into Galileo reliability checks."
+        )
+        return True
+
+    if st.session_state.get("signup_complete") and "latest_signup" in st.session_state:
+        latest = st.session_state["latest_signup"]
+        st.success(
+            f"Welcome back, {latest['full_name']}! "
+            "Your profile helps us highlight relevant stores, discounts, and sustainability callouts."
+        )
+        st.caption(f"{latest['major']} · {latest['university']} · {latest['location']}")
+        st.caption(
+            f"Focus area: {', '.join(latest['purpose_choices']) or latest['purpose_text'] or 'General exploration'}"
+        )
+        return True
+
+    st.info("Complete the quick signup above to unlock tailored ShopWise recommendations.")
+    return False
+
+
 def main() -> None:
     """Render the Streamlit UI and drive user interactions."""
     st.set_page_config(page_title="ShopWise", page_icon="🛒", layout="wide")
     st.title("ShopWise – Student-Friendly Sustainable Shopping")
     st.write(
         "Use ShopWise to explore **budget-friendly** and **lower-carbon** picks across trusted retailers. "
-        "Input any product (laptops, headphones, books, dorm gear, etc.), then compare options instantly."
+        "Start by telling us a bit about you so recommendations stay relevant."
     )
 
     st.markdown(
-        "1. Enter the product you need.\n"
-        "2. Adjust the per-store listing count if you want more results.\n"
-        "3. Sort by price or carbon footprint using the controls.\n"
+        "1. Complete the signup so we can align pricing tips with your major and campus.\n"
+        "2. Enter the product you need once the form is approved.\n"
+        "3. Adjust listing depth, sort by price or carbon, and review AI summaries.\n"
         "4. Tap **Buy Now** or expand **More Info** for deeper details.\n"
-        "5. Review Claude's AI guidance to pick the smartest option."
+        "5. Optional: run Galileo reliability checks for extra assurance."
     )
 
-    if "latest_results" not in st.session_state:
-        st.session_state["latest_results"] = {"results": [], "summary": "", "raw_dicts": [], "query": ""}
+    init_session_state()
+    init_database()
+
+    signup_ready = render_signup_form()
+
+    if not signup_ready:
+        return
 
     with st.form("search_form"):
         product_query = st.text_input(

@@ -315,6 +315,17 @@ select:focus {
   cursor: not-allowed;
 }
 
+.button.ghost {
+  background: transparent;
+  color: #4a5568;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.button.ghost:hover {
+  background: rgba(102, 126, 234, 0.06);
+  color: #1d1d1f;
+}
+
 /* Main Content */
 .page {
   max-width: 1200px;
@@ -493,6 +504,105 @@ select:focus {
   font-size: 1.05rem;
 }
 
+/* Signup Overlay */
+.signup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 5, 15, 0.65);
+  backdrop-filter: blur(10px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 200;
+}
+
+.signup-modal {
+  width: min(1200px, 95vw);
+  height: min(900px, 94vh);
+  background: #ffffff;
+  border-radius: 1.5rem;
+  box-shadow: 0 30px 80px rgba(15, 23, 42, 0.35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.signup-modal-header {
+  padding: 1.5rem 2rem;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.signup-modal-header h3 {
+  margin: 0.2rem 0 0.4rem;
+  font-size: 1.6rem;
+  letter-spacing: -0.02em;
+}
+
+.signup-modal-subtitle {
+  margin: 0;
+  color: #4a5568;
+  max-width: 520px;
+}
+
+.eyebrow {
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 0;
+  color: #764ba2;
+  font-weight: 700;
+}
+
+.signup-close {
+  border: none;
+  background: rgba(0, 0, 0, 0.05);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.2s ease, transform 0.2s ease;
+}
+
+.signup-close:hover {
+  background: rgba(0, 0, 0, 0.1);
+  transform: rotate(4deg);
+}
+
+.signup-modal-body {
+  flex: 1;
+  padding: 0 2rem 2rem;
+  display: flex;
+}
+
+.signup-iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+  border-radius: 1rem;
+  background: #f7f7fb;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06);
+}
+
+.signup-modal-footer {
+  padding: 1.25rem 2rem 1.75rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.05);
+  background: #f9fafc;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.signup-modal-footer .button.primary {
+  min-width: 180px;
+}
+
 /* Responsive */
 @media (max-width: 1024px) {
   .navbar-center {
@@ -544,6 +654,18 @@ select:focus {
     flex-direction: column;
     align-items: flex-start;
   }
+
+  .signup-modal {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  .signup-modal-header,
+  .signup-modal-body,
+  .signup-modal-footer {
+    padding: 1rem;
+  }
 }
 
 @media (max-width: 480px) {
@@ -586,5 +708,13 @@ select:focus {
 
   .search-label {
     font-size: 0.95rem;
+  }
+
+  .signup-modal-header h3 {
+    font-size: 1.3rem;
+  }
+
+  .signup-modal-subtitle {
+    font-size: 0.9rem;
   }
 }

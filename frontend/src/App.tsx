@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { searchProducts } from "./api";
 import type { ProductResult, SearchResponse } from "./types";
 import { ProductCard } from "./components/ProductCard";
 import { Summary } from "./components/Summary";
 
 type SortMode = "price" | "carbon";
+
+const STREAMLIT_SIGNUP_URL = import.meta.env.VITE_STREAMLIT_SIGNUP_URL ?? "http://localhost:8501";
 
 export default function App() {
   const [query, setQuery] = useState("");
@@ -13,6 +15,20 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<SearchResponse | null>(null);
   const [sortMode, setSortMode] = useState<SortMode>("price");
+  const [showSignup, setShowSignup] = useState(false);
+
+  useEffect(() => {
+    if (!showSignup) {
+      return;
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowSignup(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showSignup]);
 
   const handleSearch = async (event?: React.FormEvent) => {
     event?.preventDefault();
@@ -67,7 +83,9 @@ export default function App() {
           </div>
           <div className="navbar-actions">
             <button className="button secondary">Log In</button>
-            <button className="button accent">Sign Up</button>
+            <button className="button accent" onClick={() => setShowSignup(true)}>
+              Sign Up
+            </button>
           </div>
         </div>
       </nav>
@@ -157,6 +175,51 @@ export default function App() {
           </section>
         )}
       </main>
+
+      {showSignup && (
+        <div className="signup-overlay" role="dialog" aria-modal="true">
+          <div className="signup-modal">
+            <div className="signup-modal-header">
+              <div>
+                <p className="eyebrow">Step 1</p>
+                <h3>Complete your ShopWise student profile</h3>
+                <p className="signup-modal-subtitle">
+                  We’ll open the new onboarding flow in place so you can share your major, university, and purpose.
+                </p>
+              </div>
+              <button
+                className="signup-close"
+                aria-label="Close signup experience"
+                onClick={() => setShowSignup(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="signup-modal-body">
+              <iframe
+                src={STREAMLIT_SIGNUP_URL}
+                title="ShopWise Signup"
+                className="signup-iframe"
+                loading="lazy"
+              />
+            </div>
+            <div className="signup-modal-footer">
+              <button className="button ghost" onClick={() => setShowSignup(false)}>
+                Continue without signup
+              </button>
+              <a
+                className="button primary"
+                href={STREAMLIT_SIGNUP_URL}
+                target="_blank"
+                rel="noreferrer"
+                onClick={() => setShowSignup(false)}
+              >
+                Open in new tab
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
